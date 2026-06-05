@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: interaction-api
+  namespace: interaction-api
+  labels:
+    app: interaction-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: interaction-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      # Never remove a pod until the replacement is ready —
+      # avoids dropping active WebSocket connections mid-rollout
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: interaction-api
+    spec:
+      # Allow in-flight WebSocket connections to drain before pod shutdown
+      terminationGracePeriodSeconds: 60
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: interaction-api
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: interaction-api
+          image: IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
