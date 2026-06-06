@@ -97,6 +97,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                 }
             }
             Ok(envelope) = result_rx.recv() => {
+                println!("[ws] broadcast received for client={}, my id={client_id}", envelope.client_id);
                 if envelope.client_id == client_id {
                     if let Ok(json) = serde_json::to_string(&envelope) {
                         if socket.send(WsMessage::Text(json.into())).await.is_err() {
@@ -111,24 +112,42 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
 fn start_result_consumer(state: AppState, brokers: String) {
     tokio::spawn(async move {
-        let consumer: StreamConsumer = ClientConfig::new()
+        println!("[kafka] creating consumer, brokers={brokers}");
+        let consumer: StreamConsumer = match ClientConfig::new()
             .set("bootstrap.servers", &brokers)
             .set("group.id", "interaction-api")
             .set("auto.offset.reset", "latest")
             .create()
-            .expect("failed to create kafka consumer");
+        {
+            Ok(c) => c,
+            Err(e) => { println!("[kafka] consumer create failed: {e}"); return; }
+        };
 
-        consumer
-            .subscribe(&[TOPIC_RESULTS])
-            .expect("failed to subscribe");
+        println!("[kafka] consumer created, subscribing to {TOPIC_RESULTS}");
+        if let Err(e) = consumer.subscribe(&[TOPIC_RESULTS]) {
+            println!("[kafka] subscribe failed: {e}");
+            return;
+        }
 
+        println!("[kafka] subscribed to {TOPIC_RESULTS}, waiting for messages");
         let mut stream = consumer.stream();
-        while let Some(Ok(msg)) = stream.next().await {
-            let Some(Ok(raw)) = msg.payload_view::<str>() else {
-                continue;
-            };
-            if let Ok(envelope) = serde_json::from_str::<Envelope>(raw) {
-                let _ = state.result_tx.send(envelope);
+        while let Some(result) = stream.next().await {
+            match result {
+                Err(e) => println!("[kafka] consumer error: {e}"),
+                Ok(msg) => {
+                    let Some(Ok(raw)) = msg.payload_view::<str>() else {
+                        continue;
+                    };
+                    println!("[kafka] received: {raw}");
+                    match serde_json::from_str::<Envelope>(raw) {
+                        Err(e) => println!("[kafka] deserialize error: {e}"),
+                        Ok(envelope) => {
+                            let receivers = state.result_tx.receiver_count();
+                            println!("[kafka] broadcasting to {receivers} receivers");
+                            let _ = state.result_tx.send(envelope);
+                        }
+                    }
+                }
             }
         }
     });
